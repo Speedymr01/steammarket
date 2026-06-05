@@ -2,6 +2,8 @@
 
 Fetches Steam Community Market prices for registered items, logs them to CSV, and displays a price-trend graph.
 
+Comes pre-configured with **Counter-Strike 2** as a default game.
+
 ## Usage
 
 ### Main script
