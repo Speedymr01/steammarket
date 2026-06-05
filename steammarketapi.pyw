@@ -13,7 +13,7 @@ DEFAULT_GAMES = {
     "cs2": {
         "app_id": 730,
         "items": [
-            {"name": "Example Item", "buy_price": 0}
+            {"name": "Nova | Candy Apple (Minimal Wear)", "buy_price": 0}
         ],
     },
 }
