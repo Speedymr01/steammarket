@@ -12,16 +12,11 @@ NO_ENTER = "--no-enter-to-exit" in sys.argv
 DEFAULT_GAMES = {
     "cs2": {
         "app_id": 730,
-        "items": [
-            {"name": "Nova | Candy Apple (Minimal Wear)", "buy_price": 0.19}
-        ],
+        "items": [],
     },
     "tbh": {
         "app_id": 3678970,
-        "items": [
-            {"name": "Wood", "buy_price": 0},
-            {"name": "Stone", "buy_price": 0}
-        ],
+        "items": [],
     },
 }
 
