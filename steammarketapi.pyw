@@ -9,16 +9,7 @@ from datetime import datetime, timedelta
 CSV_FILE = "steammarketprices.csv"
 NO_ENTER = "--no-enter-to-exit" in sys.argv
 
-DEFAULT_GAMES = {
-    "cs2": {
-        "app_id": 730,
-        "items": [],
-    },
-    "tbh": {
-        "app_id": 3678970,
-        "items": [],
-    },
-}
+DEFAULT_GAMES = {}
 
 
 
