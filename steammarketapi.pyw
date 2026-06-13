@@ -168,11 +168,10 @@ def wait():
             pass
 
 
-def show_graph():
+def _build_graph():
     if not os.path.isfile(CSV_FILE):
         print("No data to graph.")
-        wait()
-        return
+        return None
 
     rows = []
     with open(CSV_FILE, newline="") as f:
@@ -182,18 +181,7 @@ def show_graph():
 
     if not rows:
         print("No data to graph.")
-        wait()
-        return
-
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-    except ImportError:
-        print("matplotlib is required for graphing. Install with: pip install matplotlib")
-        wait()
-        return
+        return None
 
     from collections import defaultdict
 
@@ -210,8 +198,7 @@ def show_graph():
 
     if not data:
         print("No valid data to graph.")
-        wait()
-        return
+        return None
 
     buy_price_map = {}
     for cfg in DEFAULT_GAMES.values():
@@ -220,6 +207,9 @@ def show_graph():
             bp = item.get("buy_price", 0) if isinstance(item, dict) else 0
             if bp:
                 buy_price_map[name] = _break_even(bp)
+
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
 
     fig, ax = plt.subplots(figsize=(14, 5))
     for label, pts in data.items():
@@ -259,14 +249,55 @@ def show_graph():
             d += timedelta(days=1)
     fig.autofmt_xdate()
     plt.tight_layout()
+    return fig
+
+
+def show_graph():
+    try:
+        import matplotlib
+        from matplotlib import cbook
+        if not hasattr(cbook, "_Stack") and hasattr(cbook, "Stack"):
+            cbook._Stack = cbook.Stack
+        matplotlib.use("TkAgg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is required for graphing. Install with: pip install matplotlib")
+        wait()
+        return
+    fig = _build_graph()
+    if fig is None:
+        wait()
+        return
+    plt.show()
+    wait()
+
+
+def export_graph():
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is required for graphing. Install with: pip install matplotlib")
+        wait()
+        return
+    fig = _build_graph()
+    if fig is None:
+        wait()
+        return
     plt.savefig("steammarketprices.png", dpi=2400)
     plt.close()
-    time.sleep(0.5)
+    time.sleep(1)
     os.startfile("steammarketprices.png")
     wait()
 
 
 if __name__ == "__main__":
+    if "--export" in sys.argv:
+        validate_csv()
+        export_graph()
+        sys.exit(0)
+
     if "--graph" in sys.argv:
         validate_csv()
         show_graph()
