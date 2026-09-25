@@ -6,8 +6,33 @@ import os
 import math
 from datetime import datetime, timedelta
 
+try:
+    from tkinter import Tk, messagebox
+except ImportError:
+    Tk = None
+    messagebox = None
+
 CSV_FILE = "steammarketprices.csv"
+FALLBACK_NAMES = {
+    "730": "Counter-Strike 2",
+}
+
 NO_ENTER = "--no-enter-to-exit" in sys.argv
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-GB,en;q=0.9",
+}
+_last_request_time = 0
+
+
+def _throttled_get(url, **kwargs):
+    global _last_request_time
+    elapsed = time.time() - _last_request_time
+    if elapsed < 3:
+        time.sleep(3 - elapsed)
+    _last_request_time = time.time()
+    return requests.get(url, **kwargs)
 
 DEFAULT_GAMES = {
     "cs2": {
@@ -22,7 +47,7 @@ DEFAULT_GAMES = {
 
 
 
-def get_steam_price(item_name, app_id=730, currency=2, max_retries=3, retry_delay=1):
+def get_steam_price(item_name, app_id=730, currency=2, max_retries=3, retry_delay=3):
     url = "https://steamcommunity.com/market/priceoverview/"
     params = {
         "appid": app_id,
@@ -30,27 +55,45 @@ def get_steam_price(item_name, app_id=730, currency=2, max_retries=3, retry_dela
         "market_hash_name": item_name
     }
 
+    last_error = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.get(url, params=params, timeout=10)
-            if response.status_code in (400, 429, 500, 502, 503, 504):
+            response = _throttled_get(url, params=params, headers=HEADERS, timeout=10)
+            if response.status_code == 429:
+                last_error = f"HTTP 429: Rate limited (attempt {attempt}/{max_retries})"
+                time.sleep(retry_delay * attempt)
+                continue
+            if response.status_code in (400, 500, 502, 503, 504):
+                last_error = f"HTTP {response.status_code}: Server error (attempt {attempt}/{max_retries})"
                 time.sleep(retry_delay)
                 continue
             response.raise_for_status()
             data = response.json()
             if not data.get("success"):
+                last_error = f"API returned success=false (attempt {attempt}/{max_retries})"
                 time.sleep(retry_delay)
                 continue
             median_price = data.get("median_price")
             if median_price:
-                return median_price
+                return median_price, None
             lowest_price = data.get("lowest_price")
             if lowest_price:
-                return lowest_price
+                return lowest_price, None
+            last_error = f"No price data in response (attempt {attempt}/{max_retries}): {data}"
             time.sleep(retry_delay)
-        except requests.RequestException:
+        except requests.ConnectionError:
+            last_error = f"Connection failed (attempt {attempt}/{max_retries})"
             time.sleep(retry_delay)
-    return None
+        except requests.Timeout:
+            last_error = f"Request timed out (attempt {attempt}/{max_retries})"
+            time.sleep(retry_delay)
+        except requests.RequestException as e:
+            last_error = f"Request error: {e} (attempt {attempt}/{max_retries})"
+            time.sleep(retry_delay)
+        except ValueError as e:
+            last_error = f"Invalid JSON response: {e}"
+            break
+    return None, last_error or "Unknown error"
 
 
 def save_to_csv(game, item_name, price):
@@ -64,7 +107,7 @@ def save_to_csv(game, item_name, price):
 
 def get_app_name(app_id):
     try:
-        r = requests.get(f"https://store.steampowered.com/api/appdetails?appids={app_id}", timeout=10)
+        r = _throttled_get(f"https://store.steampowered.com/api/appdetails?appids={app_id}", headers=HEADERS, timeout=10)
         data = r.json()
         if data.get(str(app_id), {}).get("success"):
             return data[str(app_id)]["data"]["name"]
@@ -75,7 +118,7 @@ def get_app_name(app_id):
 
 def item_exists(item_name, app_id):
     try:
-        r = requests.get("https://steamcommunity.com/market/priceoverview/", params={"appid": app_id, "market_hash_name": item_name, "currency": 2}, timeout=10)
+        r = _throttled_get("https://steamcommunity.com/market/priceoverview/", params={"appid": app_id, "market_hash_name": item_name, "currency": 2}, headers=HEADERS, timeout=10)
         return r.json().get("success") is True
     except Exception:
         return False
@@ -122,6 +165,91 @@ def _fmt_games():
     return "".join(lines)
 
 
+def _fmt_fallbacks():
+    lines = ["FALLBACK_NAMES = {\n"]
+    for aid, name in FALLBACK_NAMES.items():
+        lines.append(f'    "{aid}": "{name}",\n')
+    lines.append("}\n")
+    return "".join(lines)
+
+
+def _clone_script():
+    base_games = {
+        "cs2": {
+            "app_id": 730,
+            "items": [{"name": "Nova | Candy Apple (Minimal Wear)", "buy_price": 0.19}],
+        },
+    }
+    base_fallbacks = {"730": "Counter-Strike 2"}
+
+    # Generate formatted strings for the base configuration
+    orig_games, orig_fallbacks = DEFAULT_GAMES, FALLBACK_NAMES
+    
+    # Use local formatting functions to avoid dependency on global state
+    def local_fmt_games(games):
+        lines = ["DEFAULT_GAMES = {\n"]
+        for key, cfg in games.items():
+            items_lines = ",\n".join(
+                f'            {{"name": "{i["name"]}", "buy_price": {i.get("buy_price", 0)}}}'
+                for i in cfg["items"]
+            )
+            lines.append(f'    "{key}": {{\n')
+            lines.append(f'        "app_id": {cfg["app_id"]},\n')
+            lines.append(f'        "items": [\n{items_lines}\n        ],\n')
+            lines.append("    },\n")
+        lines.append("}\n")
+        return "".join(lines)
+
+    def local_fmt_fallbacks(fallbacks):
+        lines = ["FALLBACK_NAMES = {\n"]
+        for aid, name in fallbacks.items():
+            lines.append(f'    "{aid}": "{name}",\n')
+        lines.append("}\n")
+        return "".join(lines)
+
+    base_games_str = local_fmt_games(base_games)
+    base_fallbacks_str = local_fmt_fallbacks(base_fallbacks)
+
+    with open(__file__, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Identify blocks for replacement
+    start = content.index("DEFAULT_GAMES = {")
+    depth = 0
+    end = start
+    for i in range(start, len(content)):
+        if content[i] == "{": depth += 1
+        elif content[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    fallback_start = content.index("FALLBACK_NAMES = {")
+    fallback_depth = 0
+    fallback_end = fallback_start
+    for i in range(fallback_start, len(content)):
+        if content[i] == "{": fallback_depth += 1
+        elif content[i] == "}":
+            fallback_depth -= 1
+            if fallback_depth == 0:
+                fallback_end = i + 1
+                break
+
+    replacements = [
+        (start, end, base_games_str),
+        (fallback_start, fallback_end, base_fallbacks_str)
+    ]
+    replacements.sort(key=lambda x: x[0], reverse=True)
+
+    for r_start, r_end, r_text in replacements:
+        content = content[:r_start] + r_text + content[r_end:]
+
+    with open("steammarketapi_clone.pyw", "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Cloned base script to steammarketapi_clone.pyw")
+
+
 def validate_csv():
     if not os.path.isfile(CSV_FILE):
         return
@@ -129,8 +257,14 @@ def validate_csv():
     name_map = {}
     for cfg in DEFAULT_GAMES.values():
         name_map[str(cfg["app_id"])] = get_app_name(cfg["app_id"]) or str(cfg["app_id"])
-    name_map["cs2"] = name_map.get("730", "cs2")
-    name_map["tbh"] = name_map.get("3678970", "tbh")
+    
+    # Ensure consistency by mapping common app IDs to their proper names
+    for aid, name in FALLBACK_NAMES.items():
+        if aid not in name_map or name_map[aid] == aid:
+            name_map[aid] = name
+
+    name_map["cs2"] = name_map.get("730", "Counter-Strike 2")
+    name_map["tbh"] = name_map.get("3678970", "TBH: Task Bar Hero")
     old = os.path.splitext(CSV_FILE)[0] + "_old.csv"
 
     with open(CSV_FILE, newline="") as f:
@@ -139,7 +273,7 @@ def validate_csv():
         rows = [row for row in reader if any(v.strip() for v in row)]
 
     if header != REQUIRED_HEADERS:
-        os.rename(CSV_FILE, old)
+        os.replace(CSV_FILE, old)
         print(f"Migrated old CSV header to {old}")
         return
 
@@ -150,9 +284,17 @@ def validate_csv():
             if row[1] != new_name:
                 row[1] = new_name
                 changed = True
+        elif len(row) == 4 and row[1].isdigit():
+            # Resolve cases where the game name is stored as a numeric app ID
+            aid = row[1]
+            if aid in name_map:
+                new_name = name_map[aid]
+                if row[1] != new_name:
+                    row[1] = new_name
+                    changed = True
 
     if changed:
-        os.rename(CSV_FILE, old)
+        os.replace(CSV_FILE, old)
         with open(CSV_FILE, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(REQUIRED_HEADERS)
@@ -166,6 +308,22 @@ def wait():
             input("Press Enter to exit...")
         except EOFError:
             pass
+
+
+def _show_dialog(title, message, icon="warning"):
+    if Tk is None or messagebox is None:
+        print(f"\n{title}: {message}")
+        return
+    root = Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    if icon == "error":
+        messagebox.showerror(title, message, parent=root)
+    elif icon == "info":
+        messagebox.showinfo(title, message, parent=root)
+    else:
+        messagebox.showwarning(title, message, parent=root)
+    root.destroy()
 
 
 def _build_graph():
@@ -293,6 +451,25 @@ def export_graph():
 
 
 if __name__ == "__main__":
+    if "--help" in sys.argv:
+        print("Steam Market API Script Help")
+        print("-" * 25)
+        print("Usage: python steammarketapi.pyw [option]")
+        print("\nOptions:")
+        print("  --graph       - Validates CSV and shows a price graph")
+        print("  --export      - Validates CSV and saves graph to PNG")
+        print("  --register   - Add new items to the script")
+        print("  --unregister - Remove items from the script")
+        print("  --clone       - Create a clone of the script with base settings")
+        print("  --help        - Show this help menu")
+        wait()
+        sys.exit(0)
+
+    if "--clone" in sys.argv:
+        _clone_script()
+        wait()
+        sys.exit(0)
+
     if "--export" in sys.argv:
         validate_csv()
         export_graph()
@@ -396,6 +573,7 @@ if __name__ == "__main__":
         app_name = get_app_name(app_id)
         if app_name:
             print(f"Game: {app_name}")
+            FALLBACK_NAMES[app_id] = app_name
         else:
             print(f"App ID: {app_id} (could not fetch name)")
 
@@ -470,9 +648,18 @@ if __name__ == "__main__":
                 if depth == 0:
                     end = i + 1
                     break
-        for cfg in DEFAULT_GAMES.values():
-            cfg["items"] = _norm(cfg["items"])
-        content = content[:start] + _fmt_games() + content[end:]
+        
+        # Update both DEFAULT_GAMES and FALLBACK_NAMES sections
+        replacements = [
+            (start, end, _fmt_games()),
+            (fallback_start, fallback_end, _fmt_fallbacks())
+        ]
+        # Replace blocks from end to start to maintain index integrity
+        replacements.sort(key=lambda x: x[0], reverse=True)
+        
+        for r_start, r_end, r_text in replacements:
+            content = content[:r_start] + r_text + content[r_end:]
+            
         open(__file__, "w", encoding="utf-8").write(content)
 
         for item_name in item_names:
@@ -489,6 +676,8 @@ if __name__ == "__main__":
         cfg["items"] = _norm(cfg["items"])
 
     name_cache = {}
+    all_failures = []
+    all_profitable = []
     for game_key, config in DEFAULT_GAMES.items():
         aid = config["app_id"]
         if aid not in name_cache:
@@ -499,13 +688,36 @@ if __name__ == "__main__":
         fetched = []
         for i, item in enumerate(items, 1):
             print(f"[{name}: {i}/{total}] Fetching...", end="\r")
-            price = get_steam_price(item["name"], app_id=aid)
+            price, error = get_steam_price(item["name"], app_id=aid)
             save_to_csv(name, item["name"], price)
-            fetched.append((item["name"], price))
+            fetched.append((item["name"], price, error))
+            if price:
+                bp = item.get("buy_price", 0)
+                if bp > 0:
+                    be = _break_even(bp)
+                    price_f = _to_float(price)
+                    if price_f >= be:
+                        all_profitable.append((name, item["name"], price, bp, be))
+            else:
+                all_failures.append((name, item["name"], error))
+            if i < total:
+                pass
 
         fetched.sort(key=lambda x: -_to_float(x[1]))
-        for item, price in fetched:
-            print(f"\r{'':<50}\r[{name}] {item}: {price}" if price else f"\r{'':<50}\r[{name}] {item}: Failed")
+        for item, price, error in fetched:
+            if price:
+                print(f"\r{'':<50}\r[{name}] {item}: {price}")
+            else:
+                print(f"\r{'':<50}\r[{name}] {item}: Failed")
+                print(f"  -> Reason: {error}")
         print()
+
+    if all_failures:
+        lines = [f"[{g}] {n}: {e}" for g, n, e in all_failures]
+        _show_dialog("Fetch Failures", "\n".join(lines), "error")
+
+    if all_profitable:
+        lines = [f"[{g}] {n}\n  Price: {p} | Bought: £{b:.2f} | Break-even: £{be:.2f}" for g, n, p, b, be in all_profitable]
+        _show_dialog("Items Above Break-Even", "\n\n".join(lines), "info")
 
     wait()
